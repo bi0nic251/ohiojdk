@@ -1,0 +1,623 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>J.A.R.V.I.S. — Mark VI Game (Offline)</title>
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<style>
+  :root{
+    --cyan:#00ffff;
+    --bg:#000;
+    --panel:#00121a;
+  }
+  html,body{height:100%;margin:0;background:var(--bg);font-family:Consolas,monaco,monospace;color:var(--cyan);}
+  #app{display:flex;height:100vh;gap:8px;padding:8px;box-sizing:border-box;}
+  /* left: game, right: fandom & terminal */
+  #left{flex:2;display:flex;flex-direction:column;border:4px solid var(--cyan);box-sizing:border-box;position:relative;background:linear-gradient(#001,#002);}
+  #gameCanvas{width:100%;height:100%;display:block;background:linear-gradient(to top,#001020,#002040);}
+  #hud{position:absolute;left:12px;top:10px;color:var(--cyan);z-index:10;font-size:14px}
+  #topbar{position:absolute;right:12px;top:10px;color:var(--cyan);z-index:10;text-align:right}
+  #log{position:absolute;left:0;right:0;bottom:0;height:140px;background:rgba(0,0,0,0.7);color:var(--cyan);overflow:auto;padding:8px;box-sizing:border-box;font-size:13px}
+  #right{flex:1;display:flex;flex-direction:column;border:4px solid var(--cyan);box-sizing:border-box;min-width:360px;background:var(--panel)}
+  #terminalPanel{flex:1;border-bottom:2px solid rgba(0,255,255,0.08);padding:8px;box-sizing:border-box;overflow:auto}
+  #fandomPanel{flex:1;padding:8px;box-sizing:border-box;overflow:auto;background:linear-gradient(#00120c,#001824)}
+  .title{color:var(--cyan);font-weight:bold;margin:0 0 8px 0}
+  .small{font-size:13px;color:#bff}
+  button.cmd{background:transparent;border:1px solid rgba(0,255,255,0.12);color:var(--cyan);padding:6px 8px;margin:6px 6px 0 0;cursor:pointer}
+  button.cmd:hover{background:rgba(0,255,255,0.03)}
+  /* login overlay */
+  #loginOverlay{position:absolute;inset:0;background:linear-gradient(180deg,rgba(0,0,0,0.8),rgba(0,0,0,0.9));display:flex;align-items:center;justify-content:center;z-index:40}
+  #loginBox{border:2px solid var(--cyan);padding:20px;background:#000;min-width:360px;text-align:center}
+  .cursor{display:inline-block;width:10px;height:18px;background:var(--cyan);vertical-align:bottom;animation:blink 1s step-start infinite}
+  @keyframes blink{50%{opacity:0}}
+  /* boss HP bar */
+  #bossbar{position:absolute;left:50%;transform:translateX(-50%);top:8px;height:18px;background:rgba(255,255,255,0.08);border:1px solid rgba(255,255,255,0.06);display:none;z-index:20;padding:2px;box-sizing:border-box}
+  #bossbar > .fill{height:100%;background:linear-gradient(90deg,#ff4 0%, #f80 100%);width:100%}
+  /* responsive */
+  @media (max-width:900px){#app{flex-direction:column} #right{min-width:0;height:45vh}}
+</style>
+</head>
+<body>
+<div id="app">
+  <div id="left">
+    <canvas id="gameCanvas"></canvas>
+    <div id="hud">
+      <div>HEALTH: <span id="health">100</span> &nbsp;&nbsp; ENERGY: <span id="energy">100</span> &nbsp;&nbsp; SCORE: <span id="score">0</span></div>
+      <div style="font-size:12px;color:#9ff;margin-top:6px">W/A/S/D — Move &nbsp; mouse — aim &nbsp; LMB — repulsor &nbsp; RMB — missile</div>
+    </div>
+    <div id="topbar">
+      <div class="small">Wave: <span id="wave">0</span> &nbsp;&nbsp; Enemies: <span id="enemycount">0</span></div>
+    </div>
+    <div id="bossbar"><div class="fill" id="bossFill"></div></div>
+    <div id="log" aria-live="polite"></div>
+  </div>
+
+  <div id="right">
+    <div id="terminalPanel">
+      <h3 class="title">J.A.R.V.I.S. Terminal</h3>
+      <div id="terminalOutput" style="height:230px;overflow:auto;background:transparent;padding:6px;border:1px dashed rgba(0,255,255,0.03)"></div>
+      <div style="display:flex;margin-top:8px">
+        <input id="cmdInput" placeholder="Type command (favsuit, status, help)" style="flex:1;background:#000;border:1px solid rgba(0,255,255,0.06);color:var(--cyan);padding:6px"/>
+        <button id="cmdSend" class="cmd">→</button>
+      </div>
+    </div>
+
+    <div id="fandomPanel">
+      <h3 class="title">Mark VI - Offline Fandom</h3>
+      <p class="small">Mark VI is one of Tony Stark's advanced suits with the triangular arc reactor. Below are offline images and specs.</p>
+      <img id="markImage" src="" alt="Mark VI" style="width:100%;max-height:220px;object-fit:contain;border:1px solid rgba(0,255,255,0.06)">
+      <h4 style="margin:8px 0 4px 0">Specs</h4>
+      <ul class="small">
+        <li>Triangular Arc Reactor</li>
+        <li>Repulsor and missile weaponry</li>
+        <li>Flight stabilization</li>
+        <li>Advanced HUD with J.A.R.V.I.S. integration</li>
+      </ul>
+      <div style="margin-top:8px">
+        <button class="cmd" id="btnFav">Open Favsuit</button>
+        <button class="cmd" id="btnSpawnBoss">Spawn Boss (Dev)</button>
+        <button class="cmd" id="btnReset">Reset</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+/*================================================================================
+  J.A.R.V.I.S. Mark VI - Single-file offline game with boss fight & terminal
+  - Uses WebAudio synthesized sounds so the file is fully offline and legal.
+  - Controls: WASD to move, mouse to aim. LMB = repulsor (fast small shot).
+    RMB = missile (slower, powerful). Press "favsuit" in terminal to show suit page.
+  - Boss fight: heavy enemy with HP and special attacks.
+  - Author: generated by assistant. Customize images or swap WebAudio for real files.
+================================================================================*/
+
+/* -------------------------
+   Helper: WebAudio FX
+   We'll synthesize repulsor, missile, explosion, boss roar
+   ------------------------- */
+const AudioCtx = window.AudioContext || window.webkitAudioContext;
+const audioCtx = new AudioCtx();
+
+function playRepulsor(){
+  const now = audioCtx.currentTime;
+  const o = audioCtx.createOscillator();
+  const g = audioCtx.createGain();
+  o.type = 'sine';
+  o.frequency.setValueAtTime(1200, now);
+  o.frequency.exponentialRampToValueAtTime(800, now+0.12);
+  g.gain.setValueAtTime(0.0001, now);
+  g.gain.exponentialRampToValueAtTime(0.3, now+0.01);
+  g.gain.exponentialRampToValueAtTime(0.001, now+0.3);
+  o.connect(g); g.connect(audioCtx.destination);
+  o.start(now); o.stop(now+0.3);
+}
+
+function playMissile(){
+  const now = audioCtx.currentTime;
+  // whoosh (noise)
+  const bufferSize = audioCtx.sampleRate * 0.2;
+  const buffer = audioCtx.createBuffer(1, bufferSize, audioCtx.sampleRate);
+  const data = buffer.getChannelData(0);
+  for(let i=0;i<bufferSize;i++){
+    data[i] = (Math.random()*2-1) * (1 - i/bufferSize) * 0.6;
+  }
+  const src = audioCtx.createBufferSource();
+  src.buffer = buffer;
+  const bq = audioCtx.createBiquadFilter();
+  bq.type = 'lowpass'; bq.frequency.value = 1200;
+  src.connect(bq); bq.connect(audioCtx.destination);
+  src.start();
+}
+
+function playExplosion(){
+  const now = audioCtx.currentTime;
+  // explosion: low-frequency noise burst
+  const bufferSize = audioCtx.sampleRate * 0.4;
+  const buffer = audioCtx.createBuffer(1, bufferSize, audioCtx.sampleRate);
+  const data = buffer.getChannelData(0);
+  for(let i=0;i<bufferSize;i++){
+    data[i] = (Math.random()*2-1) * (1 - i/bufferSize);
+  }
+  const src = audioCtx.createBufferSource();
+  src.buffer = buffer;
+  const bq = audioCtx.createBiquadFilter();
+  bq.type = 'lowpass'; bq.frequency.value = 1000;
+  src.connect(bq); bq.connect(audioCtx.destination);
+  src.start();
+}
+
+function playBossRoar(){
+  const now = audioCtx.currentTime;
+  const o = audioCtx.createOscillator();
+  const g = audioCtx.createGain();
+  o.type = 'sawtooth';
+  o.frequency.setValueAtTime(60, now);
+  o.frequency.exponentialRampToValueAtTime(30, now+0.5);
+  g.gain.setValueAtTime(0.0001, now);
+  g.gain.exponentialRampToValueAtTime(0.6, now+0.05);
+  g.gain.exponentialRampToValueAtTime(0.0001, now+1.2);
+  o.connect(g); g.connect(audioCtx.destination);
+  o.start(now); o.stop(now+1.2);
+}
+
+/* -------------------------
+   Canvas, game state & helpers
+   ------------------------- */
+const canvas = document.getElementById('gameCanvas');
+const ctx = canvas.getContext('2d');
+function resizeCanvas(){ canvas.width = canvas.clientWidth; canvas.height = canvas.clientHeight; }
+window.addEventListener('resize', ()=>resizeCanvas());
+resizeCanvas();
+
+let keys = {}, mouse = {x:0,y:0,pressed:false, right:false};
+window.addEventListener('keydown', e=>keys[e.key.toLowerCase()] = true);
+window.addEventListener('keyup', e=>keys[e.key.toLowerCase()] = false);
+canvas.addEventListener('mousemove', (e)=>{ const r=canvas.getBoundingClientRect(); mouse.x = (e.clientX - r.left); mouse.y = (e.clientY - r.top); });
+canvas.addEventListener('mousedown', (e)=>{ mouse.pressed = true; if(e.button===2) mouse.right = true; });
+canvas.addEventListener('mouseup', (e)=>{ mouse.pressed = false; if(e.button===2) mouse.right = false; });
+canvas.addEventListener('contextmenu', e=>e.preventDefault());
+
+const logDiv = document.getElementById('log');
+function addLog(txt){
+  const d=document.createElement('div'); d.textContent = `[${new Date().toLocaleTimeString()}] ${txt}`; logDiv.appendChild(d); logDiv.scrollTop = logDiv.scrollHeight;
+}
+
+/* -------------------------
+   Player (Mark VI) entity
+   ------------------------- */
+const player = {
+  x: 0, y:0, size: 48, health: 100, energy: 100, score:0, speed: 5,
+  fireCooldown: 0, missileCooldown: 0
+};
+player.x = canvas.width/2; player.y = canvas.height*0.6;
+
+/* -------------------------
+   Entities arrays
+   ------------------------- */
+let enemies = [];     // small drones
+let bullets = [];     // repulsor shots
+let missiles = [];    // missiles
+let particles = [];   // particles
+let wave = 0;
+let boss = null;
+let enemySpawnTimer = 0;
+let bossPhase = 0;
+
+/* -------------------------
+   Sprites: partially-detailed (drawings)
+   ------------------------- */
+function drawPlayer(){
+  ctx.save();
+  ctx.translate(player.x, player.y);
+  // body
+  ctx.fillStyle = '#c33';
+  ctx.beginPath();
+  const s = player.size;
+  ctx.moveTo(0,-s*0.6); ctx.lineTo(s*0.6, s*0.6); ctx.lineTo(-s*0.6, s*0.6); ctx.closePath();
+  ctx.fill();
+  // gold plates
+  ctx.fillStyle = '#d79a00';
+  ctx.fillRect(-s*0.15, -s*0.05, s*0.3, s*0.2);
+  // reactor
+  ctx.fillStyle = '#a0ffff';
+  ctx.beginPath(); ctx.arc(0, 0, s*0.18, 0, Math.PI*2); ctx.fill();
+  ctx.restore();
+}
+
+function drawEnemy(e){
+  ctx.save(); ctx.translate(e.x,e.y);
+  ctx.fillStyle = '#bb0022';
+  ctx.beginPath(); ctx.arc(0,0,e.size/2,0,Math.PI*2); ctx.fill();
+  // eye
+  ctx.fillStyle = '#ffbb00'; ctx.fillRect(-e.size*0.08, -e.size*0.1, e.size*0.16, e.size*0.12);
+  ctx.restore();
+}
+
+/* -------------------------
+   Particles system
+   ------------------------- */
+function spawnParticles(x,y,color,count){
+  for(let i=0;i<count;i++){
+    particles.push({
+      x:x, y:y,
+      vx:(Math.random()-0.5)*6, vy:(Math.random()-0.5)*6,
+      life: Math.random()*40+20,
+      color: color
+    });
+  }
+}
+function updateParticles(){
+  for(let i=particles.length-1;i>=0;i--){
+    const p=particles[i];
+    p.x += p.vx; p.y += p.vy; p.vy += 0.06;
+    p.life--;
+    if(p.life<=0) particles.splice(i,1);
+  }
+}
+function drawParticles(){
+  for(const p of particles){
+    ctx.fillStyle = p.color;
+    ctx.fillRect(p.x, p.y, 2, 2);
+  }
+}
+
+/* -------------------------
+   Spawn & updates
+   ------------------------- */
+function spawnEnemyWave(count){
+  wave++;
+  addLog(`Wave ${wave} initiated`);
+  for(let i=0;i<count;i++){
+    enemies.push({
+      x: Math.random()*canvas.width,
+      y: -Math.random()*200 - 50,
+      size: 36 + Math.random()*24,
+      speed: 1.5 + Math.random()*2,
+      hp: 1 + Math.floor(Math.random()*2)
+    });
+  }
+}
+
+function spawnBoss(){
+  boss = {
+    x: canvas.width/2, y: -200,
+    size: 220, hp: 800, maxHp:800,
+    state: 'enter', timer:0, attackTimer:120
+  };
+  addLog('WARNING: Boss incoming — Mark VI target locked!');
+  playBossRoar();
+  document.getElementById('bossbar').style.display = 'block';
+}
+
+function updateEnemies(){
+  for(let i=enemies.length-1;i>=0;i--){
+    const e = enemies[i];
+    // simple AI: move down, small x sine sway
+    e.y += e.speed;
+    e.x += Math.sin((performance.now()+i*100)/1000) * 0.5;
+    if(e.y > canvas.height + 100) enemies.splice(i,1);
+  }
+  // boss behavior
+  if(boss){
+    if(boss.state==='enter'){
+      boss.y += 1.6;
+      if(boss.y >= canvas.height*0.2) boss.state='combat';
+    } else if(boss.state==='combat'){
+      boss.timer++;
+      // boss bob and move slowly
+      boss.x = canvas.width/2 + Math.sin(boss.timer/80)*200;
+      boss.attackTimer--;
+      if(boss.attackTimer <= 0){
+        boss.attackTimer = 80 + Math.floor(Math.random()*120);
+        // boss fires projectiles at player
+        for(let k=-1;k<=1;k++){
+          missiles.push({
+            x: boss.x + k*30,
+            y: boss.y+boss.size*0.3,
+            dx: (player.x - boss.x + k*30)/120,
+            dy: (player.y - boss.y)/120,
+            friendly:false,
+            speed: 4
+          });
+        }
+        addLog('Boss launched volleys!');
+      }
+      if(boss.hp <= 0){
+        addLog('Boss defeated! Wave cleared.');
+        spawnParticles(boss.x, boss.y, '#f80', 120);
+        playExplosion();
+        boss = null;
+        document.getElementById('bossbar').style.display = 'none';
+      }
+    }
+  }
+}
+
+/* -------------------------
+   Collisions & entity updates (bullets/missiles)
+   ------------------------- */
+function updateProjectiles(){
+  // bullets
+  for(let i=bullets.length-1;i>=0;i--){
+    const b = bullets[i];
+    b.x += b.vx; b.y += b.vy;
+    // out of bounds
+    if(b.x< -50 || b.x>canvas.width+50 || b.y< -50 || b.y>canvas.height+50){
+      bullets.splice(i,1); continue;
+    }
+    // hit enemies
+    for(let j=enemies.length-1;j>=0;j--){
+      const e=enemies[j];
+      const dx = e.x - b.x, dy = e.y - b.y;
+      if(Math.hypot(dx,dy) < e.size*0.5){
+        e.hp--; bullets.splice(i,1);
+        spawnParticles(e.x,e.y,'#0ff',20); playExplosion(); addLog('Enemy hit');
+        if(e.hp<=0){ enemies.splice(j,1); player.score += 10; }
+        break;
+      }
+    }
+    // hit boss
+    if(boss){
+      const dx = boss.x - b.x, dy = boss.y - b.y;
+      if(Math.hypot(dx,dy) < boss.size*0.5){
+        boss.hp -= 4;
+        bullets.splice(i,1);
+        spawnParticles(b.x,b.y,'#0ff',8); addLog('Bullet struck boss!');
+      }
+    }
+  }
+  // missiles
+  for(let i=missiles.length-1;i>=0;i--){
+    const m = missiles[i];
+    m.x += m.dx; m.y += m.dy;
+    if(m.x< -50 || m.x>canvas.width+50 || m.y< -50 || m.y>canvas.height+50){
+      missiles.splice(i,1); continue;
+    }
+    // missiles hit enemies
+    for(let j=enemies.length-1;j>=0;j--){
+      const e=enemies[j]; if(Math.hypot(e.x-m.x,e.y-m.y) < e.size*0.6){
+        enemies.splice(j,1); spawnParticles(m.x,m.y,'#ff0',30);
+        playExplosion(); addLog('Missile destroyed an enemy!');
+        player.score += 20;
+        missiles.splice(i,1); break;
+      }
+    }
+    // missile hit boss
+    if(boss && Math.hypot(boss.x-m.x,boss.y-m.y) < boss.size*0.6){
+      boss.hp -= 30; spawnParticles(m.x,m.y,'#f80',40); playExplosion(); addLog('Missile hit boss!');
+      missiles.splice(i,1);
+    }
+    // boss missiles hitting player
+    if(m.friendly===false && Math.hypot(m.x-player.x,m.y-player.y) < player.size*0.6){
+      player.health -= 8; spawnParticles(player.x,player.y,'#f00',25); playExplosion(); addLog('Player hit by boss missile!');
+      missiles.splice(i,1);
+    }
+  }
+}
+
+/* -------------------------
+   Player actions: fire repulsor & missile
+   ------------------------- */
+function playerFireRepulsor(){
+  if(player.fireCooldown > 0 || player.energy < 2) return;
+  const ang = Math.atan2(mouse.y - player.y, mouse.x - player.x);
+  const speed = 10;
+  bullets.push({x:player.x + Math.cos(ang)*player.size*0.3, y:player.y + Math.sin(ang)*player.size*0.3, vx: Math.cos(ang)*speed, vy: Math.sin(ang)*speed});
+  player.energy -= 2; player.fireCooldown = 8; playRepulsor(); spawnParticles(player.x,player.y,'#0ff',8);
+}
+
+function playerFireMissile(){
+  if(player.missileCooldown > 0 || player.energy < 12) return;
+  const ang = Math.atan2(mouse.y - player.y, mouse.x - player.x);
+  missiles.push({x:player.x + Math.cos(ang)*player.size*0.3, y:player.y + Math.sin(ang)*player.size*0.3, dx: Math.cos(ang)*5, dy: Math.sin(ang)*5, friendly:true});
+  player.energy -= 12; player.missileCooldown = 40; playMissile();
+}
+
+/* -------------------------
+   Main update & draw
+   ------------------------- */
+function update(dt){
+  // cool-downs
+  player.fireCooldown = Math.max(0, player.fireCooldown - 1);
+  player.missileCooldown = Math.max(0, player.missileCooldown - 1);
+  // movement
+  if(keys['w']) player.y -= player.speed;
+  if(keys['s']) player.y += player.speed;
+  if(keys['a']) player.x -= player.speed;
+  if(keys['d']) player.x += player.speed;
+  // clamp
+  player.x = Math.max(40, Math.min(canvas.width-40, player.x));
+  player.y = Math.max(40, Math.min(canvas.height-40, player.y));
+
+  // firing from input
+  if(mouse.pressed) playerFireRepulsor();
+  if(mouse.right) playerFireMissile();
+
+  // regen energy slowly
+  player.energy = Math.min(100, player.energy + 0.25);
+
+  // update enemies/projectiles/particles
+  updateEnemies();
+  updateProjectiles();
+  updateParticles();
+
+  // spawn waves & boss logic
+  if(enemies.length < 1 && !boss){
+    enemySpawnTimer++;
+    if(enemySpawnTimer > 80){
+      spawnEnemyWave(3 + Math.min(6, Math.floor(wave*0.7)));
+      enemySpawnTimer = 0;
+    }
+  }
+  // spawn a boss occasionally
+  if(wave > 0 && wave % 5 === 0 && !boss && enemies.length === 0 && Math.random() < 0.015){
+    spawnBoss();
+  }
+
+  // HUD values
+  document.getElementById('health').innerText = Math.max(0, Math.floor(player.health));
+  document.getElementById('energy').innerText = Math.floor(player.energy);
+  document.getElementById('score').innerText = player.score;
+
+  // boss bar update
+  if(boss){
+    document.getElementById('bossbar').style.display = 'block';
+    const pct = Math.max(0, boss.hp / boss.maxHp);
+    document.getElementById('bossFill').style.width = (pct*100)+'%';
+    document.getElementById('enemycount').innerText = enemies.length + ' + boss';
+  } else {
+    document.getElementById('enemycount').innerText = enemies.length;
+  }
+}
+
+function updateProjectiles(){
+  // wrapper to call both functions
+  // bullets & missiles updated earlier in dedicated function for collisions
+  // (This function kept for readability - actual collisions handled in updateProjectiles() above)
+}
+
+function draw(){
+  ctx.clearRect(0,0,canvas.width,canvas.height);
+  // faint stars background
+  for(let i=0;i<30;i++){
+    ctx.fillStyle = 'rgba(160,255,255,0.02)';
+    ctx.fillRect((i*73 + (Date.now()/40))%canvas.width, (i*37)%canvas.height, 2,2);
+  }
+  // draw player & entities
+  drawPlayer();
+  enemies.forEach(drawEnemy);
+  bullets.forEach(b => { ctx.fillStyle='#0ff'; ctx.beginPath(); ctx.arc(b.x,b.y,5,0,Math.PI*2); ctx.fill(); });
+  missiles.forEach(m => { ctx.fillStyle = m.friendly ? '#ff0' : '#f80'; ctx.beginPath(); ctx.arc(m.x,m.y,7,0,Math.PI*2); ctx.fill(); });
+  if(boss){
+    // boss draw as big ellipse & turrets
+    ctx.save(); ctx.translate(boss.x,boss.y);
+    ctx.fillStyle = '#880044';
+    ctx.beginPath(); ctx.ellipse(0,0,boss.size*0.6,boss.size*0.35,0,0,Math.PI*2); ctx.fill();
+    ctx.fillStyle = '#ff8800';
+    for(let t=-2;t<=2;t++){ ctx.fillRect(t*50 - 10, boss.size*0.15, 20, 8); }
+    ctx.restore();
+  }
+  drawParticles();
+}
+
+/* -------------------------
+   Main loop
+   ------------------------- */
+let last = performance.now();
+function frame(now){
+  const dt = now - last; last = now;
+  update(dt);
+  draw();
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+
+/* -------------------------
+   Terminal & UI wiring
+   ------------------------- */
+const termOut = document.getElementById('terminalOutput');
+const cmdInput = document.getElementById('cmdInput');
+const cmdSend = document.getElementById('cmdSend');
+const btnFav = document.getElementById('btnFav');
+const btnSpawnBoss = document.getElementById('btnSpawnBoss');
+const btnReset = document.getElementById('btnReset');
+
+function terminalPrint(txt){ termOut.innerHTML += `<div>${txt}</div>`; termOut.scrollTop = termOut.scrollHeight; }
+terminalPrint('[J.A.R.V.I.S] Systems initializing...');
+
+cmdSend.onclick = ()=>{ handleCommand(cmdInput.value); cmdInput.value = ''; };
+cmdInput.addEventListener('keydown', (e)=>{ if(e.key==='Enter'){ handleCommand(cmdInput.value); cmdInput.value=''; } });
+
+btnFav.onclick = ()=>{ handleCommand('favsuit'); };
+btnSpawnBoss.onclick = ()=>{ spawnBoss(); };
+btnReset.onclick = ()=>{ resetGame(); };
+
+function handleCommand(cmd){
+  const c = (cmd||'').trim().toLowerCase();
+  if(!c) return;
+  terminalPrint(`> ${cmd}`);
+  if(c === 'help'){
+    terminalPrint('commands: favsuit | status | spawnboss | waves | reset | help');
+  } else if(c === 'favsuit'){
+    // show fandom panel content scroll to top
+    document.getElementById('fandomPanel').scrollTop = 0;
+    terminalPrint('[J.A.R.V.I.S] Showing Mark VI specs in Fandom panel.');
+  } else if(c === 'status'){
+    terminalPrint(`[J.A.R.V.I.S] HEALTH:${player.health} ENERGY:${Math.floor(player.energy)} SCORE:${player.score} WAVE:${wave}`);
+  } else if(c === 'spawnboss'){
+    spawnBoss();
+    terminalPrint('[J.A.R.V.I.S] Boss spawn command accepted.');
+  } else if(c === 'waves'){
+    terminalPrint(`[J.A.R.V.I.S] Current wave: ${wave}, enemies: ${enemies.length}`);
+  } else if(c === 'reset'){
+    resetGame();
+    terminalPrint('[J.A.R.V.I.S] Game reset.');
+  } else {
+    terminalPrint('[J.A.R.V.I.S] Unknown command. Type "help".');
+  }
+}
+
+/* -------------------------
+   Game control helpers
+   ------------------------- */
+function resetGame(){
+  enemies = []; bullets = []; missiles = []; particles = [];
+  player.health = 100; player.energy = 100; player.score = 0; wave = 0; boss = null;
+  document.getElementById('bossbar').style.display = 'none';
+  addLog('Game reset by user.');
+}
+
+/* -------------------------
+   User input: UI events for mouse/keyboard fire
+   ------------------------- */
+// left click handled by mouse.pressed in loop; we want a fire throttle: emulate continuous fire handled in update
+canvas.addEventListener('mousedown', e=>{
+  if(e.button === 0) mouse.pressed = true;
+  if(e.button === 2) mouse.right = true;
+});
+canvas.addEventListener('mouseup', e=>{
+  if(e.button === 0) mouse.pressed = false;
+  if(e.button === 2) mouse.right = false;
+});
+
+/* -------------------------
+   Logging & initial loading/login cinematic
+   ------------------------- */
+async function sleep(ms){ return new Promise(r=>setTimeout(r,ms)); }
+
+async function startupSequence(){
+  terminalPrint('[J.A.R.V.I.S] Connecting to Stark Secure Server...');
+  let progress = 0;
+  while(progress < 100){
+    terminalOutProgress(progress);
+    await sleep(80);
+    progress += 8;
+  }
+  terminalOutProgress(100);
+  terminalPrint('[J.A.R.V.I.S] Authentication required.');
+  // password overlay simple prompt (browser prompt used for simplicity)
+  let attempts=3;
+  while(attempts>0){
+    const p = prompt('Enter Access Password:');
+    if(p === null){ terminalPrint('[J.A.R.V.I.S] Login cancelled.'); return; }
+    if(p === 'ironmanrox95'){ terminalPrint('[J.A.R.V.I.S] ACCESS GRANTED. Welcome Mr. Stark.'); break; }
+    attempts--; terminalPrint(`[J.A.R.V.I.S] ACCESS DENIED. ${attempts} attempts remaining`);
+  }
+  terminalPrint('[J.A.R.V.I.S] Loading system protocols...');
+  await sleep(700);
+  terminalPrint('[J.A.R.V.I.S] J.A.R.V.I.S systems online. Good luck.');
+  addLog('Player online — Mark VI ready.');
+}
+function terminalOutProgress(n){
+  const barLen = 30;
+  const filled = Math.round((n/100)*barLen);
+  const bar = '[' + '#'.repeat(filled) + '-'.repeat(barLen - filled) + `] ${n}%`;
+  termOut.innerHTML = `<div>${bar}</div>`;
+}
+startupSequence();
+
+/* End of file */
+</script>
+</body>
+</html>
